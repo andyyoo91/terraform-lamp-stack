@@ -15,7 +15,7 @@ resource "aws_vpc" "ay_vpc" {
 
 resource "aws_subnet" "Private_Subnet" {
   vpc_id            = "${aws_vpc.ay_vpc.id}"
-  cidr_block        = "{${var.private_subnet_cidr}}"
+  cidr_block        = "${var.private_subnet_cidr}"
   availability_zone = "us-east-1a"
 
   tags {
@@ -26,7 +26,7 @@ resource "aws_subnet" "Private_Subnet" {
 resource "aws_subnet" "Public_Subnet" {
   vpc_id            = "${aws_vpc.ay_vpc.id}"
   cidr_block        = "${var.public_subnet_cidr}"
-  availability_zone = "us-east-1a"
+  availability_zone = "us-east-1b"
 
   tags {
     Name = "Ay_Public_Subnet"
@@ -36,7 +36,7 @@ resource "aws_subnet" "Public_Subnet" {
 resource "aws_subnet" "Public_Subnet2" {
   vpc_id            = "${aws_vpc.ay_vpc.id}"
   cidr_block        = "${var.public_subnet2_cidr}"
-  availability_zone = "us-east-1b"
+  availability_zone = "us-east-1c"
 
   tags {
     Name = "Ay_Public_Subnet2"
@@ -63,6 +63,7 @@ resource "aws_db_instance" "MySQL" {
   username             = "Yoo"
   password             = "YooAndy0626"
   parameter_group_name = "default.mysql5.6"
+  db_subnet_group_name = "aydb_subnet_group"
 }
 
 resource "aws_internet_gateway" "gw" {
@@ -78,7 +79,11 @@ resource "aws_route_table" "RT_Private_subnet" {
 
   route {
     cidr_block = "${var.route_table_private_cidr}"
-    gateway_id = "${aws_internet_gateway.gw.id}"
+    nat_gateway_id = "${aws_nat_gateway.NAT.id}"
+  }
+
+  tags = {
+    Name = "AY_Private_RT"
   }
 }
 
@@ -89,10 +94,15 @@ resource "aws_route_table_association" "PR" {
 
 resource "aws_route_table" "RT_Public_subnet" {
   vpc_id = "${aws_vpc.ay_vpc.id}"
-
+  
   route {
     cidr_block = "${var.route_table_public_cidr}"
-    gateway_id = "${aws_internet_gateway.gw.id}"
+    nat_gateway_id = "${aws_nat_gateway.NAT.id}"
+
+  }
+
+  tags = {
+    Name = "AY_Public_RT"
   }
 }
 
@@ -101,34 +111,58 @@ resource "aws_route_table_association" "PU" {
   route_table_id = "${aws_route_table.RT_Public_subnet.id}"
 }
 
+resource "aws_security_group" "AY_EC2" {
+  name        = "EC2_to_RDS"
+  description = "Allowing EC2 instance to communicate with RDS instance"
+  vpc_id      = "${aws_vpc.ay_vpc.id}"
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 3306
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags {
+    Name = "AY_EC2_Security_group"
+  }
+}
+
 resource "aws_security_group" "AY_MYSQL" {
   name        = "web server"
   description = "Allow access to MySQL RDS"
   vpc_id      = "${aws_vpc.ay_vpc.id}"
 
   ingress {
-    from_port   = 80
-    to_port     = 80
+    from_port   = 22
+    to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
-    from_port   = 1024
-    to_port     = 65535
+    from_port   = 0
+    to_port     = 0
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags {
+    Name = "AY_MYSQL_Security_group"
   }
 }
 
 resource "aws_db_subnet_group" "AY-db" {
-  name        = "main"
+  name        = "aydb_subnet_group"
   description = "Our main group of subnets"
-  subnet_ids  = ["${aws_subnet.Private_Subnet.id}"]
-
-  tags {
-    Name = "AYTest DB subnet group"
-  }
+  subnet_ids  = ["${aws_subnet.Private_Subnet.id}", "${aws_subnet.Public_Subnet2.id}"]
 }
 
 resource "aws_lb" "test" {
@@ -138,22 +172,22 @@ resource "aws_lb" "test" {
   security_groups    = ["${aws_security_group.test.id}"]
   subnets            = ["${aws_subnet.Public_Subnet.id}", "${aws_subnet.Public_Subnet2.id}"]
 
-  enable_deletion_protection = true
-
   tags = {
     Environment = "dev"
   }
 }
 
-resource "aws_lb_target_group" "test" {
+resource "aws_lb_target_group" "ALB_TG" {
   name     = "AWS-lb-tg"
   port     = 80
   protocol = "HTTP"
   vpc_id   = "${aws_vpc.ay_vpc.id}"
 }
 
-resource "aws_vpc" "main" {
-  cidr_block = "190.160.0.0/16"
+resource "aws_lb_target_group_attachment" "ALB_TG_attachment" {
+  target_group_arn = "${aws_lb_target_group.ALB_TG.arn}"
+  target_id        = "${aws_instance.AYEC2.id}"
+  port             = 80
 }
 
 resource "aws_security_group" "test" {
@@ -165,14 +199,19 @@ resource "aws_security_group" "test" {
     from_port   = "443"
     to_port     = "443"
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["173.10.166.169/32"]
   }
 
   egress {
-    from_port   = "0"
-    to_port     = "0"
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port       = "0"
+    to_port         = "0"
+    protocol        = "-1"
+    cidr_blocks     = ["0.0.0.0/0"]
+    security_groups = ["${aws_security_group.AY_EC2.id}"]
+  }
+
+  tags {
+    Name = "AY_ALB_Security_group"
   }
 }
 
@@ -183,90 +222,19 @@ resource "aws_lb_listener" "test" {
 
   default_action {
     type             = "forward"
-    target_group_arn = "${aws_lb_target_group.test.arn}"
+    target_group_arn = "${aws_lb_target_group.ALB_TG.arn}"
   }
 }
 
-resource "aws_security_group" "allow_ssh" {
-  name        = "allow_all"
-  description = "Allow inbound SSH traffic from my IP"
-  vpc_id      = "${aws_vpc.ay_vpc.id}"
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["123.123.123.123/32"]
-  }
-
-  tags {
-    Name = "Allow SSH"
-  }
+resource "aws_nat_gateway" "NAT" {
+  allocation_id = "${aws_eip.nat.id}"
+  subnet_id     = "${aws_subnet.Private_Subnet.id}"
 }
 
-resource "aws_security_group" "nat" {
-  name        = "vpc_nat"
-  description = "Allow traffic to pass from the private subnet to the internet"
-
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["${var.private_subnet_cidr}"]
-  }
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["${var.private_subnet_cidr}"]
-  }
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = -1
-    to_port     = -1
-    protocol    = "icmp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["${var.vpc_cidr}"]
-  }
-
-  egress {
-    from_port   = -1
-    to_port     = -1
-    protocol    = "icmp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  vpc_id = "${aws_vpc.ay_vpc.id}"
+resource "aws_eip" "nat" {
+  vpc = true
 
   tags {
-    Name = "NATSG"
+    Name = "AY_EIP"
   }
 }
