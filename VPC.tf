@@ -63,7 +63,7 @@ resource "aws_db_instance" "MySQL" {
   username             = "Yoo"
   password             = "YooAndy0626"
   parameter_group_name = "default.mysql5.6"
-  db_subnet_group_name = "aydb_subnet_group"
+  db_subnet_group_name = "AY-db"
 }
 
 resource "aws_internet_gateway" "gw" {
